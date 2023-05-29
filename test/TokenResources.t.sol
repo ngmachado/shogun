@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.0;
 
-import { test } from "forge-std/test.sol";
+import "forge-std/Test.sol";
 import { TokenResources } from "./../src/tokens/TokenResources.sol";
 
 contract TokenResourcesTest is Test {
@@ -19,10 +19,8 @@ contract TokenResourcesTest is Test {
     function testBalances() public {
         for(uint256 i = 0; i < 5; i++) {
             uint256 balance = tokenResources.balanceOf(owner, i);
-            assertEq.equal(balance, 1000000 ether, "wrong balance");
+            assertEq(balance, 1000000 ether, "wrong balance");
         }
-
-
     }
 
 }
