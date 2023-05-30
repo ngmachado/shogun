@@ -231,6 +231,30 @@ contract MountainTest is Test {
 		__checkIfNotJailed();
 	}
 
+	function testMultipleStreams() public {
+		__fundAndOpenStreamToMountain(player1, 1 ether);
+		__fundAndOpenStreamToMountain(player2, 2 ether);
+		__fundAndOpenStreamToMountain(player3, 3 ether);
+
+		int96 outFlowRate1 = mountain.stoneFlowRate(player1);
+		int96 outFlowRate2 = mountain.stoneFlowRate(player2);
+		int96 outFlowRate3 = mountain.stoneFlowRate(player3);
+
+		assertGt(outFlowRate1, 0, "Player 1 streamOutToken stream not created");
+		assertGt(outFlowRate2, 0, "Player 2 streamOutToken stream not created");
+		assertGt(outFlowRate3, 0, "Player 3 streamOutToken stream not created");
+
+		(int96 kingTax1, , int96 feeTax1) = mountain.splitAmounts(outFlowRate1);
+		(int96 kingTax2, , int96 feeTax2) = mountain.splitAmounts(outFlowRate2);
+		(int96 kingTax3, , int96 feeTax3) = mountain.splitAmounts(outFlowRate3);
+
+		int96 kingTax = mountain.kingTaxRate();
+		int96 feeTax = mountain.feeCollectorTaxRate();
+
+		assertEq(kingTax, kingTax1 + kingTax2 + kingTax3, "Wrong king tax rate");
+		assertEq(feeTax, feeTax1 + feeTax2 + feeTax3, "Wrong fee collector tax rate");
+	}
+
 
 	function testUpdateStreamNotAllowed() public {
 		__fundAndOpenStreamToMountain(player1, 1 ether);
@@ -255,6 +279,7 @@ contract MountainTest is Test {
 		__fundAndOpenStreamToMountain(player1, 1 ether);
 		int96 outFlowRate = mountain.stoneFlowRate(player1);
 		assertGt(outFlowRate, 0, "streamOutToken stream not created");
+		__checkIfNotJailed();
 	}
 
 	function testDeletionOfStreamOutTokenStream() public {
@@ -263,6 +288,7 @@ contract MountainTest is Test {
 		streamInToken.deleteFlow(player1, address(mountain));
 		int96 outFlowRate = mountain.stoneFlowRate(player1);
 		assertEq(outFlowRate, 0, "streamOutToken stream not deleted");
+		__checkIfNotJailed();
 	}
 
 	function testCalculationOfTaxes() public {
@@ -272,6 +298,7 @@ contract MountainTest is Test {
 		assertEq(kingTax, outFlowRate * 50 / 100, "wrong king tax");
 		assertEq(feeTax, outFlowRate * 20 / 100, "wrong fee tax");
 		assertEq(treasureTax, outFlowRate - kingTax - feeTax, "wrong treasure tax");
+		__checkIfNotJailed();
 	}
 
 	function testUpdateOfSplitStreams() public {
@@ -281,5 +308,6 @@ contract MountainTest is Test {
 		int96 outFlowRate = mountain.stoneFlowRate(player1);
 		assertEq(kingTax, outFlowRate * 50 / 100, "wrong king tax rate");
 		assertEq(feeTax, outFlowRate * 20 / 100, "wrong fee collector tax rate");
+		__checkIfNotJailed();
 	}
 }
