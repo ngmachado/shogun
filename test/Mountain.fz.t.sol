@@ -63,8 +63,8 @@ contract MountainTest is Test {
 		mountain = new Mountain(
 			streamInToken,
 			streamOutToken,
-			1 ether,
-			3 ether,
+			100000,
+			100 ether,
 			0,//86400,
 			feeCollector,
 			IBattleground(address(0))
@@ -124,8 +124,8 @@ contract MountainTest is Test {
 	// TESTS
 
 	function testOpenStreamToMountain(int256 flowRate) public {
-		int256 min = 1 ether;
-		int256 max = 3 ether;
+		int256 min = 100000;
+		int256 max = 100 ether;
 		flowRate = bound(int256(flowRate), min, max);
 		__fundAndOpenStreamToMountain(player1, int96(flowRate));
 		__checkStreams(player1, int96(flowRate));
@@ -135,8 +135,8 @@ contract MountainTest is Test {
 	}
 
 	function testCalculationOfTaxes(int256 flowRate) public {
-		int256 min = 1 ether;
-		int256 max = 3 ether;
+		int256 min = 100000;
+		int256 max = 100 ether;
 		flowRate = bound(int256(flowRate), min, max);
 		__fundAndOpenStreamToMountain(player1, int96(flowRate));
 

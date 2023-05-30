@@ -310,4 +310,30 @@ contract MountainTest is Test {
 		assertEq(feeTax, outFlowRate * 20 / 100, "wrong fee collector tax rate");
 		__checkIfNotJailed();
 	}
+
+	function testKingStopsTaxStream() public {
+		__fundAndOpenStreamToMountain(player1, 1 ether);
+		int96 initialKingTaxRate = mountain.kingTaxRate();
+		assertGt(initialKingTaxRate, 0, "Initial king tax stream should be more than zero");
+		vm.startPrank(owner);
+		streamInToken.deleteFlow(address(mountain), owner);
+		vm.stopPrank();
+		int96 newKingTaxRate = mountain.kingTaxRate();
+		assertEq(newKingTaxRate, 0, "King tax stream should be stopped");
+		__checkIfNotJailed();
+
+		// check is feeCollector is still active
+		int96 feeCollectorTaxRate = mountain.feeCollectorTaxRate();
+		assertGt(feeCollectorTaxRate, 0, "Fee collector tax stream should be more than zero");
+
+		// player 1 cancel stream
+		vm.startPrank(player1);
+		streamInToken.deleteFlow(player1, address(mountain));
+		vm.stopPrank();
+
+		// check is feeCollector stopped
+		feeCollectorTaxRate = mountain.feeCollectorTaxRate();
+		assertEq(feeCollectorTaxRate, 0, "Fee collector tax stream should be stopped");
+		__checkIfNotJailed();
+	}
 }
