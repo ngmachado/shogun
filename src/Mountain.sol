@@ -1,166 +1,163 @@
 // SPDX-License-Identifier: MIT
-pragma solidity >=0.8.0;
+pragma solidity ^0.8.0;
 
-import {ISuperfluid, ISuperToken, ISuperApp, ISuperAgreement, SuperAppDefinitions} from "@superfluid-finance/ethereum-contracts/contracts/interfaces/superfluid/ISuperfluid.sol";
+import {ISuperfluid, ISuperToken } from "@superfluid-finance/ethereum-contracts/contracts/interfaces/superfluid/ISuperfluid.sol";
 import { SuperTokenV1Library } from "@superfluid-finance/ethereum-contracts/contracts/apps/SuperTokenV1Library.sol";
-import {IConstantFlowAgreementV1} from "@superfluid-finance/ethereum-contracts/contracts/interfaces/agreements/IConstantFlowAgreementV1.sol";
 import {SuperAppBaseCFA} from "@superfluid-finance/ethereum-contracts/contracts/apps/SuperAppBaseCFA.sol";
 import { IBattleground } from "./interfaces/IBattleground.sol";
 
+import "forge-std/Console.sol";
+
 contract Mountain is SuperAppBaseCFA {
 
-    error NoUpdateAllowed();
-    error ZeroAddress();
-    error NoSelfAttack();
-
-    // ---------------------------------------------------------------------------------------------
-    // EVENTS
-    event HailNewKing(address king, uint256 army);
-    event BuildingArmy(address account, int96 armyFlowRate);
-
-    /// @notice Importing the SuperToken Library to make working with streams easy.
     using SuperTokenV1Library for ISuperToken;
-    // ---------------------------------------------------------------------------------------------
-    // STORAGE & IMMUTABLES
 
-    /// @notice Token coming in and token going out
     ISuperToken public immutable streamInToken;
     ISuperToken public immutable streamOutToken;
 
-    /// @notice the last time the rate changed
-    uint256 public immutable initialTime;
-    int96 public immutable initialRate;
+    int96 public minFlowRate;
+    int96 public maxFlowRate;
+    uint32 public cooldownPeriodInSeconds;
 
-    /// @notice the amount of tax which remains in the contract as treasure
-    int96 public immutable treasureRate;
-
-    /// @notice the step in the army auction. How much bigger than previous should it be?
-    uint256 public step;
-
-    /// @notice the current king of the hill
     address public king;
     uint256 public kingStrength;
     uint256 public kingDefense;
-
-    /// @notice the fee collector
     address public feeCollector;
 
-    // battleground contract
     IBattleground public immutable battlegroundContract;
+    mapping(address => uint256) public cooldowns;
 
     constructor(
         ISuperToken _streamInToken,
         ISuperToken _streamOutToken,
-        uint256 _step,
-        int96 _initialRate,
-        int96 _treasureRate,
+        int96 _minFlowRate,
+        int96 _maxFlowRate,
+        uint32 _cooldownPeriodInSeconds,
         address _feeCollector,
         IBattleground _battlegroundContract
-    ) SuperAppBaseCFA(
-        ISuperfluid(_streamInToken.getHost()),
-        true, true, true
-    ) {
-        // TODO: add checks for _streamInToken, _streamOutToken
-        // streamInToken is test it by getting host address
-        if(address(_streamOutToken) == address(0)) revert ZeroAddress();
+    ) SuperAppBaseCFA(ISuperfluid(_streamInToken.getHost()), true, true, true) {
+
+        require(address(_streamOutToken) != address(0), "Zero address not allowed");
+        require(_minFlowRate > 0, "Minimum flow rate must be positive");
+        require(_maxFlowRate > 0, "Maximum flow rate must be positive");
 
         streamInToken = _streamInToken;
         streamOutToken = _streamOutToken;
 
-        initialRate = _initialRate;
-        step = _step;
-        initialTime = block.timestamp;
+        minFlowRate = _minFlowRate;
+        maxFlowRate = _maxFlowRate;
+
+        cooldownPeriodInSeconds = _cooldownPeriodInSeconds;
+
         king = msg.sender;
-        treasureRate = _treasureRate;
 
         feeCollector = _feeCollector;
         battlegroundContract = _battlegroundContract;
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // UTILITY FUNCTIONS
-    // ---------------------------------------------------------------------------------------------
-
-    function taxRate() public view returns (int96){
+    // how much tax is the king getting
+    function kingTaxRate() public view returns (int96){
         return streamInToken.getFlowRate(address(this), king);
     }
 
-    //TODO: review
-    function _rate() internal view returns (int96) {
-        int96 calculatedRate = initialRate - int96(int256(block.timestamp - initialTime));
-        return calculatedRate < 0 ? int96(0) : calculatedRate;
+    function feeCollectorTaxRate() public view returns (int96){
+        return streamInToken.getFlowRate(address(this), feeCollector);
     }
 
-    function rate() public view returns (int96) {
-        return _rate();
+    function stoneFlowRate(address user) public view returns (int96){
+        return streamOutToken.getFlowRate(address(this), user);
     }
 
-    function rate(address user) public view returns (int96) {
-        return streamOutToken.getFlowRate(address(this), user) / streamInToken.getFlowRate(user, address(this));
+    // Returns tax rates for king, treasure and fee collector
+    function splitAmounts(int96 flowRate) public pure returns (int96 kingAmount, int96 treasureAmount, int96 feeAmount) {
+        (kingAmount, treasureAmount, feeAmount) = _calculateTaxes(flowRate);
     }
 
-    function _armyFlowRate(int96 cashFlowRate) internal view returns (int96) {
-        uint256 _cashFlowRate = uint96(cashFlowRate);
-        uint256 _rate = uint96(_rate());
-        uint256 armyFlowRate = uint256(_cashFlowRate * _rate) / 1e18;
-        require(armyFlowRate <= uint256(uint96(type(int96).max)), "armyFlowRate overflow");
-        return int96(int256(armyFlowRate));
+    // Tax calculation helper function
+    function _calculateTaxes(int96 flowRate) internal pure returns(int96 kingTax, int96 treasureTax, int96 feeTax) {
+        feeTax = flowRate * 20 / 100; // collector gets 20%
+        kingTax = flowRate * 50 / 100; // king gets 50%
+        treasureTax = flowRate - feeTax - kingTax; // treasure gets the rest
     }
 
-    function armyFlowRate(int96 cashFlowRate) public view returns (int96) {
-        return _armyFlowRate(cashFlowRate);
+    // Returns whether the user is in the cooldown period
+    function _isInCooldown(address user) internal view returns (bool) {
+        return cooldowns[user] + cooldownPeriodInSeconds > block.timestamp;
     }
 
-    //TODO: review
-    function _totalTaxMinusFee() internal view returns (int96){
-        int96 totalInflow = streamInToken.getNetFlowRate(address(this)) + streamInToken.getFlowRate(address(this), king);
-        return totalInflow - (totalInflow * treasureRate / 10000); // treasureRate defines the amount kept in contract
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // BECOMING KING
-    // ---------------------------------------------------------------------------------------------
-
-    function attack() public {
-        // king can't attack himself
-        if(msg.sender == king) revert NoSelfAttack();
-        // check battleground for army
-        (uint256 totalStrength, uint256 totalDefense) = battlegroundContract.getUserArmyStats(msg.sender);
-
-        //TODO: Add random buffer here
-
-        if(totalStrength + totalDefense > kingStrength + kingDefense) {
-           // _becomeKing(msg.sender, totalStrength, totalDefense);
-        } else {
-            // TODO: how much should the army lose?
-            battlegroundContract.armyFlee(msg.sender, 20);
+    // User data decoding
+    function _decodeUserData(bytes memory ctx) internal view returns (address nftAddress, uint256 tokenId) {
+        bytes memory userData = host.decodeCtx(ctx).userData;
+        if(userData.length == 64) {
+            (nftAddress, tokenId) = abi.decode(userData, (address, uint256));
         }
     }
 
+    // SuperToken acceptance check
     function isAcceptedSuperToken(ISuperToken superToken) public view override returns (bool) {
         return superToken == streamInToken;
     }
+    // Stream creation or update
+    function _createOrUpdateSplitStream(address receiver, int96 flowRate, bytes memory ctx) internal returns(bytes memory newCtx) {
+        int96 currentFlowRate = streamInToken.getFlowRate(address(this), receiver);
+        if (flowRate > 0 && currentFlowRate == 0) {
+            return streamInToken.createFlowWithCtx(receiver, flowRate, ctx);
+        } else {
+            return _updateFlow(receiver, flowRate, currentFlowRate, ctx);
+        }
+    }
 
-    // ---------------------------------------------------------------------------------------------
-    // SUPER APP CALLBACKS
-    // ---------------------------------------------------------------------------------------------
+    // Stream update
+    function _updateFlow(address receiver, int96 flowRate, int96 currentFlowRate, bytes memory ctx) internal returns(bytes memory newCtx) {
+        int96 finalFlowRate = currentFlowRate + flowRate;
+        if (finalFlowRate <= 0) {
+            return streamInToken.deleteFlowWithCtx(address(this), receiver, ctx);
+        } else {
+            return streamInToken.updateFlowWithCtx(receiver, finalFlowRate, ctx);
+        }
+    }
 
-    /// @dev super app callback triggered after user sends stream to contract
+    // Stream deletion or update
+    function _deleteOrUpdateSplitStream(address receiver, int96 flowRate, bytes memory ctx) internal returns(bytes memory newCtx) {
+        newCtx = ctx;
+        int96 currentFlowRate = streamInToken.getFlowRate(address(this), receiver);
+        if (currentFlowRate > 0) {
+            newCtx = _deleteOrUpdateFlow(receiver, flowRate, currentFlowRate, ctx);
+        }
+    }
+
+    // Stream deletion or update
+    function _deleteOrUpdateFlow(address receiver, int96 flowRate, int96 currentFlowRate, bytes memory ctx) internal returns(bytes memory newCtx) {
+        int96 finalFlowRate = currentFlowRate - flowRate;
+        if (finalFlowRate <= 0) {
+            return streamInToken.deleteFlowWithCtx(address(this), receiver, ctx);
+        }
+        else {
+            return streamInToken.updateFlowWithCtx(receiver, finalFlowRate, ctx);
+        }
+    }
+
     function onFlowCreated(
         ISuperToken superToken,
         address sender,
         bytes calldata ctx
     ) internal override returns (bytes memory newCtx) {
+        require(!_isInCooldown(sender), "User is in a cooldown period");
+        cooldowns[sender] = block.timestamp;
         newCtx = ctx;
-        // user is streaming in streamInToken, send him back streamOutToken.
-        // if _armyFlowRate returns zero we want to revert the operation.
-        int96 armyFlowRate = _armyFlowRate(superToken.getFlowRate(sender, address(this)));
-        newCtx = streamOutToken.createFlowWithCtx(sender, armyFlowRate, ctx);
-        // adjust (up) stream to king
-        streamInToken.getFlowRate(address(this), king) == 0
-            ? newCtx = streamInToken.createFlowWithCtx(king, _totalTaxMinusFee(), newCtx)
-            : newCtx = streamInToken.updateFlowWithCtx(king, _totalTaxMinusFee(), newCtx);
-        emit BuildingArmy(sender, armyFlowRate);
+        int96 inFLowRate = superToken.getFlowRate(sender, address(this));
+        require(inFLowRate >= minFlowRate && inFLowRate <= maxFlowRate, "Flow rate out of range");
+        (address nftAddress, uint256 tokenId) = _decodeUserData(ctx);
+        if(nftAddress != address(0) && tokenId != 0) {
+            // get get how much streamOutToken from random oracle
+        }
+        //TODO: this is mock until we get the real buff
+        int96 outFlowRate = superToken.getFlowRate(sender, address(this));
+
+        newCtx = streamOutToken.createFlowWithCtx(sender, outFlowRate, newCtx);
+        (int96 kingTax, int96 treasureTax, int96 feeTax) = _calculateTaxes(outFlowRate);
+        newCtx = _createOrUpdateSplitStream(king, kingTax, newCtx);
+        newCtx = _createOrUpdateSplitStream(feeCollector, feeTax, newCtx);
     }
 
     function onFlowUpdated(
@@ -170,29 +167,36 @@ contract Mountain is SuperAppBaseCFA {
         uint256 /*lastUpdated*/,
         bytes calldata ctx
     ) internal override returns (bytes memory /*newCtx*/) {
-        revert NoUpdateAllowed();
+        revert("Flow updated not supported");
     }
 
     function onFlowDeleted(
-        ISuperToken /*superToken*/,
+        ISuperToken superToken,
         address sender,
-        address /*receiver*/,
-        int96 /*previousFlowRate*/,
+        address receiver,
+        int96 previousFlowRate,
         uint256 /*lastUpdated*/,
         bytes calldata ctx
     ) internal override returns (bytes memory newCtx) {
         newCtx = ctx;
-        // user stopped streaming in streamInToken, close the streamOutToken stream if running
-        if(streamOutToken.getFlowRate(address(this), sender) != 0) {
-            newCtx = streamOutToken.deleteFlowWithCtx(address(this), sender, newCtx);
+
+        // if user stopped receiving streamOutToken don't do anything
+        if(superToken == streamOutToken) {
+            return newCtx;
         }
-        // only operate on stream if they are running
-        if(streamInToken.getFlowRate(address(this), king) != 0) {
-            // adjust (down) stream to king
-            int96 _taxRate = _totalTaxMinusFee();
-            _taxRate == 0
-                ? newCtx = streamInToken.deleteFlowWithCtx(address(this), king, newCtx)
-                : newCtx = streamInToken.updateFlowWithCtx(king, _taxRate, newCtx);
+
+        // if user stop sending streamInToken, close the streamOutToken stream if running
+        if(superToken == streamInToken) {
+            if(streamOutToken.getFlowRate(address(this), sender) != 0) {
+               newCtx = streamOutToken.deleteFlowWithCtx(address(this), sender, newCtx);
+            }
         }
+
+        // update split values, king and feeCollector based on this change
+        (int96 kingTax, , int96 feeTax) = _calculateTaxes(previousFlowRate);
+        // adjust (down) stream to king
+        newCtx = _deleteOrUpdateSplitStream(king, kingTax, newCtx);
+        newCtx = _deleteOrUpdateSplitStream(feeCollector, feeTax, newCtx);
+
     }
 }
